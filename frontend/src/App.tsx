@@ -13,6 +13,7 @@ function App() {
   const [position, setPosition] = useState<number | null>(null);
   const [peopleAhead, setPeopleAhead] = useState<number | null>(null);
   const [estimatedWait, setEstimatedWait] = useState<number | null>(null);
+  const [predictedWait, setPredictedWait] = useState<number | null>(null);
   const [queueLength, setQueueLength] = useState(0);
   const [liveNowServing, setLiveNowServing] = useState<string | null>(null);
   const [liveEstimatedWait, setLiveEstimatedWait] = useState(0);
@@ -42,6 +43,27 @@ function App() {
 
   return () => clearInterval(interval);
 }, []);
+useEffect(() => {
+  if (!token) return;
+
+  const fetchPrediction = async () => {
+    try {
+      const response = await fetch(
+        `http://localhost:5000/api/predict/${token}`
+      );
+
+      const data = await response.json();
+
+      if (data.success) {
+        setPredictedWait(data.predictedWait);
+      }
+    } catch (error) {
+      console.error("Failed to fetch AI prediction:", error);
+    }
+  };
+
+  fetchPrediction();
+}, [token, queueLength]);
   const serveNext = async () => {
   try {
     const response = await fetch(
@@ -63,6 +85,30 @@ function App() {
     alert(`${data.servedToken} has been served.`);
   } catch (error) {
     console.error("Failed to serve next customer:", error);
+    alert("Unable to connect to QueueMind AI backend.");
+  }
+};
+const completeCurrent = async () => {
+  try {
+    const response = await fetch(
+      "http://localhost:5000/api/queue/complete",
+      {
+        method: "POST",
+      }
+    );
+
+    const data = await response.json();
+
+    if (!data.success) {
+      alert(data.message);
+      return;
+    }
+
+    await fetchQueue();
+
+    alert(`${data.completedToken} has been completed.`);
+  } catch (error) {
+    console.error("Failed to complete current customer:", error);
     alert("Unable to connect to QueueMind AI backend.");
   }
 };
@@ -88,6 +134,13 @@ function App() {
       setPosition(data.position);
       setPeopleAhead(data.peopleAhead);
       setEstimatedWait(data.estimatedWait);
+      const predictionResponse = await fetch(
+ `http://localhost:5000/api/predict/${data.token}`
+);
+
+const predictionData = await predictionResponse.json();
+
+setPredictedWait(predictionData.predictedWait);
 
       setQueueLength(data.position);
       await fetchQueue();
@@ -165,6 +218,13 @@ function App() {
       >
         ✓ Serve Next
       </button>
+      <button
+  className="primary-btn"
+  onClick={completeCurrent}
+  disabled={!liveNowServing}
+>
+  Complete Current
+</button>
     </div>
   </section>
 )}
@@ -238,6 +298,7 @@ function App() {
             <span>Position: {position}</span>
             <span>People ahead: {peopleAhead}</span>
             <span>Estimated wait: {estimatedWait} min</span>
+            <span>AI predicted wait: {predictedWait} min</span>
           </div>
           </section>
         )}
