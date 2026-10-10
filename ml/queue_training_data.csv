@@ -1,0 +1,12 @@
+token_number,service,average_service_time,people_ahead,baseline_wait,actual_wait
+A127,General Consultation,5,6,35,6.21
+A128,Billing & Payments,4,0,0,1.32
+A129,Document Services,7,0,0,0.48
+A130,General Consultation,5,0,0,0.32
+A131,General Consultation,5,0,0,0.46
+A132,Billing & Payments,4,1,5,1.07
+A133,General Consultation,5,0,0,2.27
+A134,General Consultation,5,1,5,2.81
+A135,General Consultation,5,2,10,3.15
+A136,General Consultation,5,3,15,3.35
+A137,General Consultation,5,4,20,3.22

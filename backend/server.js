@@ -1,3 +1,5 @@
+const { spawn } = require("child_process");
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const supabase = require("./supabase");
@@ -7,6 +9,41 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+function predictWaitTime(averageServiceTime, peopleAhead, baselineWait) {
+  return new Promise((resolve, reject) => {
+    const pythonScript = path.join(__dirname, "..", "ml", "predict.py");
+
+const python = spawn("python", [
+  pythonScript,
+  averageServiceTime.toString(),
+  peopleAhead.toString(),
+  baselineWait.toString(),
+]);
+
+    let output = "";
+    let errorOutput = "";
+
+    python.stdout.on("data", (data) => {
+      output += data.toString();
+    });
+
+    python.stderr.on("data", (data) => {
+      errorOutput += data.toString();
+    });
+
+    python.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(errorOutput));
+        return;
+      }
+
+      resolve(parseFloat(output.trim()));
+    });
+  });
+}
+// ----------------------
+// ML Prediction Test Route
+// ----------------------
 
 
 
@@ -361,7 +398,7 @@ const { error: updateError } = await supabase
       .from("queue_events")
       .insert({
         token_id: nextToken.id,
-        event_type: "served",
+        event_type: "called",
       });
 
     if (eventError) {
@@ -459,6 +496,104 @@ app.post("/api/queue/complete", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to complete customer.",
+    });
+  }
+});
+// -------------------------
+// Predict Waiting Time
+// -------------------------
+
+app.get("/api/predict/:tokenNumber", async (req, res) => {
+  try {
+    const { tokenNumber } = req.params;
+
+    const { data: token, error: tokenError } = await supabase
+      .from("tokens")
+      .select(`
+        id,
+        token_number,
+        status,
+        created_at,
+        service_id,
+        services (
+          name,
+          average_service_time
+        )
+      `)
+      .eq("token_number", tokenNumber)
+      .single();
+
+    if (tokenError) {
+      return res.status(404).json({
+        success: false,
+        message: "Token not found.",
+      });
+    }
+
+    if (token.status !== "waiting") {
+      return res.json({
+        success: true,
+        token: token.token_number,
+        status: token.status,
+        predictedWait: 0,
+        message: "Customer is not waiting in the queue.",
+      });
+    }
+
+    const { data: waitingTokens, error: queueError } = await supabase
+      .from("tokens")
+      .select(`
+        id,
+        token_number,
+        created_at,
+        services (
+          average_service_time
+        )
+      `)
+      .eq("status", "waiting")
+      .order("created_at", { ascending: true });
+
+    if (queueError) {
+      throw queueError;
+    }
+
+    const position = waitingTokens.findIndex(
+      (item) => item.id === token.id
+    ) + 1;
+
+    const peopleAhead = position - 1;
+
+    const baselineWait = waitingTokens
+      .slice(0, peopleAhead)
+      .reduce((total, item) => {
+        return total + item.services.average_service_time;
+      }, 0);
+
+    // Use ML model to predict waiting time
+    const predictedWait = await predictWaitTime(
+      token.services.average_service_time,
+      peopleAhead,
+      baselineWait
+    );
+
+    res.json({
+      success: true,
+      token: token.token_number,
+      service: token.services.name,
+      status: token.status,
+      position: position,
+      peopleAhead: peopleAhead,
+      baselineWait: baselineWait,
+      predictedWait: predictedWait,
+      predictionType: "machine-learning",
+    });
+
+  } catch (error) {
+    console.error("Prediction error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to predict waiting time.",
     });
   }
 });
