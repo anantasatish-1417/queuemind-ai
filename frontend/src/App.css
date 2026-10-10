@@ -210,9 +210,15 @@ main {
 
 .token-info {
   display: flex;
-  justify-content: center;
-  gap: 30px;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   color: #667085;
+  margin-top: 15px;
+}
+
+.token-info span {
+  display: block;
 }
 
 .services {

@@ -4,6 +4,12 @@ import "./App.css";
 function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [token, setToken] = useState<string | null>(null);
+  const [selectedService, setSelectedService] = useState(1);
+  const serviceNames: Record<number, string> = {
+  1: "General Consultation",
+  2: "Billing & Payments",
+  3: "Document Services",
+};
   const [position, setPosition] = useState<number | null>(null);
   const [peopleAhead, setPeopleAhead] = useState<number | null>(null);
   const [estimatedWait, setEstimatedWait] = useState<number | null>(null);
@@ -28,8 +34,14 @@ function App() {
 
   // Fetch queue when page loads
   useEffect(() => {
+  fetchQueue();
+
+  const interval = setInterval(() => {
     fetchQueue();
-  }, []);
+  }, 5000);
+
+  return () => clearInterval(interval);
+}, []);
   const serveNext = async () => {
   try {
     const response = await fetch(
@@ -65,6 +77,9 @@ function App() {
         headers: {
           "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          serviceId: selectedService,
+        }),
       });
 
       const data = await response.json();
@@ -167,6 +182,14 @@ function App() {
               Take a digital token, track your position, and get intelligent
               waiting-time predictions in real time.
             </p>
+            <select
+            value={selectedService}
+            onChange={(e) => setSelectedService(Number(e.target.value))}
+          >
+            <option value={1}>🏥 General Consultation</option>
+            <option value={2}>💳 Billing & Payments</option>
+            <option value={3}>📄 Document Services</option>
+            </select>
 
             <button
               className="primary-btn"
@@ -210,11 +233,12 @@ function App() {
 
             <h2>{token}</h2>
 
-            <div className="token-info">
-              <span>Position: {position}</span>
-              <span>People ahead: {peopleAhead}</span>
-              <span>Estimated wait: {estimatedWait} min</span>
-            </div>
+           <div className="token-info">
+            <span>Service: {serviceNames[selectedService]}</span>
+            <span>Position: {position}</span>
+            <span>People ahead: {peopleAhead}</span>
+            <span>Estimated wait: {estimatedWait} min</span>
+          </div>
           </section>
         )}
 

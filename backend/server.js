@@ -37,12 +37,18 @@ app.get("/api/health", (req, res) => {
 
 app.post("/api/tokens", async (req, res) => {
   try {
-    // Get the default service
+    const { serviceId } = req.body;
+    if (!serviceId) {
+  return res.status(400).json({
+    success: false,
+    message: "serviceId is required.",
+  });
+}
     const { data: service, error: serviceError } = await supabase
-      .from("services")
-      .select("id, average_service_time")
-      .eq("name", "General Consultation")
-      .single();
+    .from("services")
+    .select("id, average_service_time")
+    .eq("id", serviceId)
+    .single();
 
     if (serviceError) {
       throw serviceError;
