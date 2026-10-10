@@ -4,6 +4,7 @@ const supabase = require("./supabase");
 
 const app = express();
 
+
 app.use(cors());
 app.use(express.json());
 
@@ -198,6 +199,103 @@ app.get("/api/queue", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to fetch queue.",
+    });
+  }
+});
+  // -------------------------
+// Get Token Status
+// -------------------------
+
+app.get("/api/tokens/:tokenNumber", async (req, res) => {
+  try {
+    const { tokenNumber } = req.params;
+
+    // Find the requested token
+    const { data: token, error: tokenError } = await supabase
+      .from("tokens")
+      .select(`
+        id,
+        token_number,
+        status,
+        created_at,
+        served_at,
+        service_id,
+        services (
+          name,
+          average_service_time
+        )
+      `)
+      .eq("token_number", tokenNumber)
+      .single();
+
+    if (tokenError) {
+      return res.status(404).json({
+        success: false,
+        message: "Token not found.",
+      });
+    }
+
+    // If token is no longer waiting
+    if (token.status !== "waiting") {
+      return res.json({
+        success: true,
+        token: token.token_number,
+        status: token.status,
+        position: null,
+        peopleAhead: 0,
+        estimatedWait: 0,
+      });
+    }
+
+    // Get all waiting tokens ahead of this token
+    const { data: waitingTokens, error: queueError } = await supabase
+      .from("tokens")
+      .select(`
+        id,
+        token_number,
+        created_at,
+        service_id,
+        services (
+          average_service_time
+        )
+      `)
+      .eq("status", "waiting")
+      .order("created_at", { ascending: true });
+
+    if (queueError) {
+      throw queueError;
+    }
+
+    // Find this token's position
+    const position = waitingTokens.findIndex(
+      (item) => item.id === token.id
+    ) + 1;
+
+    const peopleAhead = position - 1;
+
+    // Calculate waiting time based on people ahead
+    const estimatedWait = waitingTokens
+      .slice(0, position - 1)
+      .reduce((total, item) => {
+        return total + item.services.average_service_time;
+      }, 0);
+
+    res.json({
+      success: true,
+      token: token.token_number,
+      service: token.services.name,
+      status: token.status,
+      position: position,
+      peopleAhead: peopleAhead,
+      estimatedWait: estimatedWait,
+    });
+
+  } catch (error) {
+    console.error("Token status error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to get token status.",
     });
   }
 });
