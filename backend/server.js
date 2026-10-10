@@ -305,6 +305,24 @@ app.get("/api/tokens/:tokenNumber", async (req, res) => {
 
 app.post("/api/queue/serve-next", async (req, res) => {
   try {
+    // Check if a customer is already being served
+const { data: servingToken, error: servingError } = await supabase
+  .from("tokens")
+  .select("id, token_number")
+  .eq("status", "serving")
+  .limit(1)
+  .maybeSingle();
+
+if (servingError) {
+  throw servingError;
+}
+
+if (servingToken) {
+  return res.status(400).json({
+    success: false,
+    message: `${servingToken.token_number} is still being served.`,
+  });
+}
     // Find the first waiting token
     const { data: nextToken, error: findError } = await supabase
       .from("tokens")
@@ -326,13 +344,13 @@ app.post("/api/queue/serve-next", async (req, res) => {
     }
 
     // Mark token as served
-    const { error: updateError } = await supabase
-      .from("tokens")
-      .update({
-        status: "served",
-        served_at: new Date().toISOString(),
-      })
-      .eq("id", nextToken.id);
+    // Mark token as currently being served
+const { error: updateError } = await supabase
+  .from("tokens")
+  .update({
+    status: "serving",
+  })
+  .eq("id", nextToken.id);
 
     if (updateError) {
       throw updateError;
@@ -363,7 +381,7 @@ app.post("/api/queue/serve-next", async (req, res) => {
 
     res.json({
       success: true,
-      message: `${nextToken.token_number} has been served.`,
+      message: `${nextToken.token_number} is now being served.`,
       servedToken: nextToken.token_number,
       remainingQueue: remainingQueue.length,
       queue: remainingQueue,
@@ -375,6 +393,72 @@ app.post("/api/queue/serve-next", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to serve next customer.",
+    });
+  }
+});
+// -------------------------
+// Complete Current Customer
+// -------------------------
+
+app.post("/api/queue/complete", async (req, res) => {
+  try {
+    // Find the currently serving token
+    const { data: servingToken, error: findError } = await supabase
+      .from("tokens")
+      .select("id, token_number")
+      .eq("status", "serving")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (findError) {
+      throw findError;
+    }
+
+    if (!servingToken) {
+      return res.status(400).json({
+        success: false,
+        message: "No customer is currently being served.",
+      });
+    }
+
+    // Mark the token as served
+    const { error: updateError } = await supabase
+      .from("tokens")
+      .update({
+        status: "served",
+        served_at: new Date().toISOString(),
+      })
+      .eq("id", servingToken.id);
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    // Record queue event
+    const { error: eventError } = await supabase
+      .from("queue_events")
+      .insert({
+        token_id: servingToken.id,
+        event_type: "served",
+      });
+
+    if (eventError) {
+      throw eventError;
+    }
+
+    res.json({
+      success: true,
+      message: `${servingToken.token_number} has been completed.`,
+      completedToken: servingToken.token_number,
+    });
+
+  } catch (error) {
+    console.error("Complete customer error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to complete customer.",
     });
   }
 });
