@@ -352,19 +352,74 @@ app.post("/api/queue/serve-next", async (req, res) => {
     }
 
     // Find the first waiting token
-    const nextToken = await mongoDb
-      .collection("tokens")
-      .findOne(
-        { status: "waiting" },
-        { sort: { createdAt: 1 } }
-      );
+    // Get all waiting tokens
+const waitingTokens = await mongoDb
+  .collection("tokens")
+  .find({
+    status: "waiting",
+  })
+  .sort({
+    createdAt: 1,
+  })
+  .toArray();
 
-    if (!nextToken) {
-      return res.status(400).json({
-        success: false,
-        message: "No customers are waiting.",
-      });
-    }
+if (waitingTokens.length === 0) {
+  return res.status(400).json({
+    success: false,
+    message: "No customers are waiting.",
+  });
+}
+
+// Calculate AI priority for each waiting customer
+const recommendations = [];
+
+for (const token of waitingTokens) {
+  const service = await mongoDb
+    .collection("services")
+    .findOne({
+      id: token.serviceId,
+    });
+
+  if (!service) {
+    continue;
+  }
+
+  const peopleAhead = waitingTokens.filter(
+    (item) =>
+      new Date(item.createdAt) < new Date(token.createdAt)
+  ).length;
+
+  const baselineWait =
+    peopleAhead * service.average_service_time;
+
+  const predictedWait = await predictWaitTime(
+    service.average_service_time,
+    peopleAhead,
+    baselineWait
+  );
+
+  const waitingMinutes =
+    (Date.now() - new Date(token.createdAt).getTime()) /
+    (1000 * 60);
+
+  const priorityScore =
+    predictedWait * 1.5 +
+    waitingMinutes * 2 +
+    peopleAhead * 0.5 -
+    service.average_service_time * 0.2;
+
+  recommendations.push({
+    token,
+    priorityScore,
+  });
+}
+
+// Select the highest-priority customer
+recommendations.sort(
+  (a, b) => b.priorityScore - a.priorityScore
+);
+
+const nextToken = recommendations[0].token;
 
     // Mark token as currently being served
     await mongoDb
@@ -411,6 +466,279 @@ app.post("/api/queue/serve-next", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to serve next customer.",
+    });
+  }
+});
+// -------------------------
+// Queue Analytics
+// -------------------------
+
+app.get("/api/analytics", async (req, res) => {
+  try {
+    const tokens = await mongoDb
+      .collection("tokens")
+      .find({})
+      .toArray();
+
+    const servedTokens = tokens.filter(
+      (token) => token.status === "served"
+    );
+
+    const calledEvents = await mongoDb
+      .collection("queue_events")
+      .find({
+        eventType: "called",
+      })
+      .toArray();
+
+    const calledMap = {};
+
+    for (const event of calledEvents) {
+      calledMap[event.tokenNumber] = new Date(event.createdAt);
+    }
+
+    let totalWaitTime = 0;
+    let validWaits = 0;
+
+    for (const token of servedTokens) {
+      const calledAt = calledMap[token.tokenNumber];
+
+      if (!calledAt) {
+        continue;
+      }
+
+      const createdAt = new Date(token.createdAt);
+
+      const waitTime =
+        (calledAt - createdAt) / (1000 * 60);
+
+      if (waitTime >= 0) {
+        totalWaitTime += waitTime;
+        validWaits++;
+      }
+    }
+
+    const averageWaitTime =
+      validWaits > 0
+        ? totalWaitTime / validWaits
+        : 0;
+
+    res.json({
+      success: true,
+      totalCustomers: tokens.length,
+      customersServed: servedTokens.length,
+      customersWaiting: tokens.filter(
+        (token) => token.status === "waiting"
+      ).length,
+      averageWaitTime: Number(
+        averageWaitTime.toFixed(2)
+      ),
+    });
+  } catch (error) {
+    console.error("Analytics error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to calculate analytics.",
+    });
+  }
+});
+// -------------------------
+// Service-wise Analytics
+// -------------------------
+
+app.get("/api/analytics/services", async (req, res) => {
+  try {
+    const tokens = await mongoDb
+      .collection("tokens")
+      .find({})
+      .toArray();
+
+    const services = await mongoDb
+      .collection("services")
+      .find({})
+      .toArray();
+
+    const calledEvents = await mongoDb
+      .collection("queue_events")
+      .find({
+        eventType: "called",
+      })
+      .toArray();
+
+    const calledMap = {};
+
+    for (const event of calledEvents) {
+      calledMap[event.tokenNumber] = new Date(event.createdAt);
+    }
+
+    const serviceAnalytics = [];
+
+    for (const service of services) {
+      const serviceTokens = tokens.filter(
+        (token) => token.serviceId === service.id
+      );
+
+      const servedTokens = serviceTokens.filter(
+        (token) => token.status === "served"
+      );
+
+      let totalWaitTime = 0;
+      let validWaits = 0;
+
+      for (const token of servedTokens) {
+        const calledAt = calledMap[token.tokenNumber];
+
+        if (!calledAt) {
+          continue;
+        }
+
+        const createdAt = new Date(token.createdAt);
+
+        const waitTime =
+          (calledAt - createdAt) / (1000 * 60);
+
+        if (waitTime >= 0) {
+          totalWaitTime += waitTime;
+          validWaits++;
+        }
+      }
+
+      const averageWaitTime =
+        validWaits > 0
+          ? totalWaitTime / validWaits
+          : 0;
+
+      serviceAnalytics.push({
+        service: service.name,
+        totalCustomers: serviceTokens.length,
+        customersServed: servedTokens.length,
+        customersWaiting: serviceTokens.filter(
+          (token) => token.status === "waiting"
+        ).length,
+        averageWaitTime: Number(
+          averageWaitTime.toFixed(2)
+        ),
+      });
+    }
+
+    res.json({
+      success: true,
+      services: serviceAnalytics,
+    });
+  } catch (error) {
+    console.error(
+      "Service analytics error:",
+      error
+    );
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to calculate service analytics.",
+    });
+  }
+});
+// -------------------------
+// AI Queue Optimization
+// -------------------------
+
+app.get("/api/queue/optimization", async (req, res) => {
+  try {
+    // Get all waiting tokens
+    const waitingTokens = await mongoDb
+      .collection("tokens")
+      .find({
+        status: "waiting",
+      })
+      .sort({
+        createdAt: 1,
+      })
+      .toArray();
+
+    if (waitingTokens.length === 0) {
+      return res.json({
+        success: true,
+        recommendation: null,
+        message: "No customers are waiting.",
+      });
+    }
+
+    // Calculate priority for each token
+    const recommendations = [];
+
+    for (const token of waitingTokens) {
+      const service = await mongoDb
+        .collection("services")
+        .findOne({
+          id: token.serviceId,
+        });
+
+      if (!service) {
+        continue;
+      }
+
+      const peopleAhead = waitingTokens.filter(
+        (item) =>
+          new Date(item.createdAt) < new Date(token.createdAt)
+      ).length;
+
+      const baselineWait =
+        peopleAhead * service.average_service_time;
+
+      const predictedWait = await predictWaitTime(
+        service.average_service_time,
+        peopleAhead,
+        baselineWait
+      );
+
+      // Priority score:
+      // Higher waiting time = higher priority
+      const waitingMinutes =
+        (Date.now() - new Date(token.createdAt).getTime()) /
+        (1000 * 60);
+const priorityScore =
+  predictedWait * 1.5 +
+  waitingMinutes * 2 +
+  peopleAhead * 0.5 -
+  service.average_service_time * 0.2;
+
+      recommendations.push({
+        tokenNumber: token.tokenNumber,
+        service: service.name,
+        peopleAhead: peopleAhead,
+        baselineWait: Number(baselineWait.toFixed(2)),
+        predictedWait: predictedWait,
+        waitingMinutes: Number(waitingMinutes.toFixed(2)),
+        priorityScore: Number(priorityScore.toFixed(2)),
+      });
+    }
+
+    // Highest priority should be served first
+    recommendations.sort(
+      (a, b) => b.priorityScore - a.priorityScore
+    );
+
+    const recommended = recommendations[0];
+
+    res.json({
+      success: true,
+      recommendation: {
+        token: recommended.tokenNumber,
+        service: recommended.service,
+        predictedWait: recommended.predictedWait,
+        waitingMinutes: recommended.waitingMinutes,
+        priorityScore: recommended.priorityScore,
+        reason: `Highest priority based on waiting time and queue length.`,
+      },
+      candidates: recommendations,
+    });
+
+  } catch (error) {
+    console.error("AI queue optimization error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to calculate queue optimization.",
     });
   }
 });

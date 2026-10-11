@@ -1,0 +1,23 @@
+token_number,service,average_service_time,people_ahead,baseline_wait,actual_wait
+A101,"General Consultation",5,0,0,8.74
+A102,"General Consultation",5,1,5,2.52
+A103,"General Consultation",5,2,10,8.6
+A104,"General Consultation",5,3,15,1.47
+A105,"General Consultation",5,4,20,2.74
+A106,"General Consultation",5,5,25,1
+A107,"General Consultation",5,6,30,7.66
+A110,"General Consultation",5,9,45,4.78
+A112,"General Consultation",5,11,55,2.77
+A113,"General Consultation",5,12,60,3.09
+A114,"General Consultation",5,13,65,3.42
+A115,"General Consultation",5,14,70,3.62
+A116,"General Consultation",5,15,75,3.74
+A117,"Billing & Payments",4,0,0,3.78
+A118,"Billing & Payments",4,1,4,3.93
+A119,"Billing & Payments",4,2,8,4.01
+A120,"Billing & Payments",4,3,12,4.12
+A121,"Document Services",7,0,0,4.12
+A122,"Document Services",7,1,7,4.18
+A123,"Document Services",7,2,14,4.25
+A124,"Document Services",7,3,21,4.27
+A125,"Document Services",7,4,28,4.3
