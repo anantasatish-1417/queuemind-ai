@@ -2,7 +2,11 @@ const { spawn } = require("child_process");
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
-const supabase = require("./supabase");
+
+const { MongoClient } = require("mongodb");
+
+const mongoClient = new MongoClient(process.env.MONGODB_URI);
+const mongoDb = mongoClient.db("queuemind");
 
 const app = express();
 
@@ -76,83 +80,75 @@ app.get("/api/health", (req, res) => {
 app.post("/api/tokens", async (req, res) => {
   try {
     const { serviceId } = req.body;
+
     if (!serviceId) {
-  return res.status(400).json({
-    success: false,
-    message: "serviceId is required.",
-  });
-}
-    const { data: service, error: serviceError } = await supabase
-    .from("services")
-    .select("id, average_service_time")
-    .eq("id", serviceId)
-    .single();
-
-    if (serviceError) {
-      throw serviceError;
+      return res.status(400).json({
+        success: false,
+        message: "serviceId is required.",
+      });
     }
 
-    // Find the latest token number
-    const { data: latestToken, error: latestTokenError } = await supabase
-      .from("tokens")
-      .select("token_number")
-      .order("id", { ascending: false })
+    // Find service in MongoDB
+    const service = await mongoDb.collection("services").findOne({
+      id: serviceId,
+    });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        message: "Service not found.",
+      });
+    }
+
+    // Find latest token
+    const latestToken = await mongoDb
+      .collection("tokens")
+      .find({})
+      .sort({ tokenNumberValue: -1 })
       .limit(1)
-      .maybeSingle();
-
-    if (latestTokenError) {
-      throw latestTokenError;
-    }
+      .next();
 
     let nextNumber = 101;
 
     if (latestToken) {
-      nextNumber = parseInt(latestToken.token_number.substring(1)) + 1;
+      nextNumber = latestToken.tokenNumberValue + 1;
     }
 
     const token = `A${nextNumber}`;
 
-    // Insert token into PostgreSQL
-    const { data: newToken, error: tokenError } = await supabase
-      .from("tokens")
-      .insert({
-        token_number: token,
-        service_id: service.id,
+    const newToken = {
+      tokenNumber: token,
+      tokenNumberValue: nextNumber,
+      serviceId: service.id,
+      status: "waiting",
+      createdAt: new Date(),
+      servedAt: null,
+    };
+
+    const result = await mongoDb
+      .collection("tokens")
+      .insertOne(newToken);
+
+    // Count waiting tokens
+    const waitingCount = await mongoDb
+      .collection("tokens")
+      .countDocuments({
         status: "waiting",
-      })
-      .select()
-      .single();
+      });
 
-    if (tokenError) {
-      throw tokenError;
-    }
-
-    // Count people currently waiting
-    const { count, error: countError } = await supabase
-      .from("tokens")
-      .select("*", { count: "exact", head: true })
-      .eq("status", "waiting");
-
-    if (countError) {
-      throw countError;
-    }
-
-    const position = count;
+    const position = waitingCount;
     const peopleAhead = position - 1;
+
     const estimatedWait =
       peopleAhead * service.average_service_time;
 
     // Record queue event
-    const { error: eventError } = await supabase
-      .from("queue_events")
-      .insert({
-        token_id: newToken.id,
-        event_type: "created",
-      });
-
-    if (eventError) {
-      throw eventError;
-    }
+    await mongoDb.collection("queue_events").insertOne({
+      tokenId: result.insertedId,
+      tokenNumber: token,
+      eventType: "created",
+      createdAt: new Date(),
+    });
 
     res.json({
       success: true,
@@ -161,9 +157,8 @@ app.post("/api/tokens", async (req, res) => {
       peopleAhead: peopleAhead,
       estimatedWait: estimatedWait,
     });
-
   } catch (error) {
-    console.error("Token creation error:", error);
+    console.error("MongoDB token creation error:", error);
 
     res.status(500).json({
       success: false,
@@ -179,46 +174,45 @@ app.post("/api/tokens", async (req, res) => {
 app.get("/api/queue", async (req, res) => {
   try {
     // Get waiting customers
-    const { data: queue, error: queueError } = await supabase
-      .from("tokens")
-      .select(`
-        id,
-        token_number,
-        status,
-        created_at,
-        served_at,
-        service_id,
-        services (
-          name,
-          average_service_time
-        )
-      `)
-      .eq("status", "waiting")
-      .order("created_at", { ascending: true });
+    const queue = await mongoDb
+      .collection("tokens")
+      .find({ status: "waiting" })
+      .sort({ createdAt: 1 })
+      .toArray();
 
-    if (queueError) {
-      throw queueError;
+    // Get services for queue tokens
+    for (const token of queue) {
+      const service = await mongoDb
+        .collection("services")
+        .findOne({ id: token.serviceId });
+
+      token.service = service
+        ? {
+            name: service.name,
+            average_service_time: service.average_service_time,
+          }
+        : null;
     }
 
     // Get the token currently being served
-    const { data: servingToken, error: servingError } = await supabase
-      .from("tokens")
-      .select("id, token_number, status")
-      .eq("status", "serving")
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (servingError) {
-      throw servingError;
-    }
+    const servingToken = await mongoDb
+      .collection("tokens")
+      .findOne(
+        { status: "serving" },
+        { sort: { createdAt: 1 } }
+      );
 
     // Calculate estimated waiting time
     let estimatedWait = 0;
 
     if (queue.length > 0) {
       estimatedWait = queue.reduce((total, token) => {
-        return total + token.services.average_service_time;
+        return (
+          total +
+          (token.service
+            ? token.service.average_service_time
+            : 0)
+        );
       }, 0);
     }
 
@@ -226,12 +220,14 @@ app.get("/api/queue", async (req, res) => {
       success: true,
       queueLength: queue.length,
       queue: queue,
-      nowServing: servingToken ? servingToken.token_number : null,
+      nowServing: servingToken
+        ? servingToken.tokenNumber
+        : null,
       estimatedWait: estimatedWait,
     });
 
   } catch (error) {
-    console.error("Queue fetch error:", error);
+    console.error("MongoDB queue fetch error:", error);
 
     res.status(500).json({
       success: false,
@@ -242,30 +238,18 @@ app.get("/api/queue", async (req, res) => {
   // -------------------------
 // Get Token Status
 // -------------------------
-
 app.get("/api/tokens/:tokenNumber", async (req, res) => {
   try {
     const { tokenNumber } = req.params;
 
     // Find the requested token
-    const { data: token, error: tokenError } = await supabase
-      .from("tokens")
-      .select(`
-        id,
-        token_number,
-        status,
-        created_at,
-        served_at,
-        service_id,
-        services (
-          name,
-          average_service_time
-        )
-      `)
-      .eq("token_number", tokenNumber)
-      .single();
+    const token = await mongoDb
+      .collection("tokens")
+      .findOne({
+        tokenNumber: tokenNumber,
+      });
 
-    if (tokenError) {
+    if (!token) {
       return res.status(404).json({
         success: false,
         message: "Token not found.",
@@ -276,7 +260,7 @@ app.get("/api/tokens/:tokenNumber", async (req, res) => {
     if (token.status !== "waiting") {
       return res.json({
         success: true,
-        token: token.token_number,
+        token: token.tokenNumber,
         status: token.status,
         position: null,
         peopleAhead: 0,
@@ -284,43 +268,51 @@ app.get("/api/tokens/:tokenNumber", async (req, res) => {
       });
     }
 
-    // Get all waiting tokens ahead of this token
-    const { data: waitingTokens, error: queueError } = await supabase
-      .from("tokens")
-      .select(`
-        id,
-        token_number,
-        created_at,
-        service_id,
-        services (
-          average_service_time
-        )
-      `)
-      .eq("status", "waiting")
-      .order("created_at", { ascending: true });
-
-    if (queueError) {
-      throw queueError;
-    }
+    // Get all waiting tokens
+    const waitingTokens = await mongoDb
+      .collection("tokens")
+      .find({
+        status: "waiting",
+      })
+      .sort({
+        createdAt: 1,
+      })
+      .toArray();
 
     // Find this token's position
-    const position = waitingTokens.findIndex(
-      (item) => item.id === token.id
-    ) + 1;
+    const position =
+      waitingTokens.findIndex(
+        (item) => item.tokenNumber === token.tokenNumber
+      ) + 1;
 
     const peopleAhead = position - 1;
 
-    // Calculate waiting time based on people ahead
-    const estimatedWait = waitingTokens
-      .slice(0, position - 1)
-      .reduce((total, item) => {
-        return total + item.services.average_service_time;
-      }, 0);
+    // Calculate estimated waiting time
+    let estimatedWait = 0;
+
+    for (const item of waitingTokens.slice(0, position - 1)) {
+      const service = await mongoDb
+        .collection("services")
+        .findOne({
+          id: item.serviceId,
+        });
+
+      if (service) {
+        estimatedWait += service.average_service_time;
+      }
+    }
+
+    // Find current token's service
+    const service = await mongoDb
+      .collection("services")
+      .findOne({
+        id: token.serviceId,
+      });
 
     res.json({
       success: true,
-      token: token.token_number,
-      service: token.services.name,
+      token: token.tokenNumber,
+      service: service ? service.name : null,
       status: token.status,
       position: position,
       peopleAhead: peopleAhead,
@@ -328,7 +320,7 @@ app.get("/api/tokens/:tokenNumber", async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Token status error:", error);
+    console.error("MongoDB token status error:", error);
 
     res.status(500).json({
       success: false,
@@ -343,35 +335,26 @@ app.get("/api/tokens/:tokenNumber", async (req, res) => {
 app.post("/api/queue/serve-next", async (req, res) => {
   try {
     // Check if a customer is already being served
-const { data: servingToken, error: servingError } = await supabase
-  .from("tokens")
-  .select("id, token_number")
-  .eq("status", "serving")
-  .limit(1)
-  .maybeSingle();
+    const servingToken = await mongoDb
+      .collection("tokens")
+      .findOne({
+        status: "serving",
+      });
 
-if (servingError) {
-  throw servingError;
-}
-
-if (servingToken) {
-  return res.status(400).json({
-    success: false,
-    message: `${servingToken.token_number} is still being served.`,
-  });
-}
-    // Find the first waiting token
-    const { data: nextToken, error: findError } = await supabase
-      .from("tokens")
-      .select("id, token_number")
-      .eq("status", "waiting")
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (findError) {
-      throw findError;
+    if (servingToken) {
+      return res.status(400).json({
+        success: false,
+        message: `${servingToken.tokenNumber} is still being served.`,
+      });
     }
+
+    // Find the first waiting token
+    const nextToken = await mongoDb
+      .collection("tokens")
+      .findOne(
+        { status: "waiting" },
+        { sort: { createdAt: 1 } }
+      );
 
     if (!nextToken) {
       return res.status(400).json({
@@ -380,52 +363,47 @@ if (servingToken) {
       });
     }
 
-    // Mark token as served
     // Mark token as currently being served
-const { error: updateError } = await supabase
-  .from("tokens")
-  .update({
-    status: "serving",
-  })
-  .eq("id", nextToken.id);
-
-    if (updateError) {
-      throw updateError;
-    }
+    await mongoDb
+      .collection("tokens")
+      .updateOne(
+        { _id: nextToken._id },
+        {
+          $set: {
+            status: "serving",
+          },
+        }
+      );
 
     // Record queue event
-    const { error: eventError } = await supabase
-      .from("queue_events")
-      .insert({
-        token_id: nextToken.id,
-        event_type: "called",
-      });
-
-    if (eventError) {
-      throw eventError;
-    }
+    await mongoDb.collection("queue_events").insertOne({
+      tokenId: nextToken._id,
+      tokenNumber: nextToken.tokenNumber,
+      eventType: "called",
+      createdAt: new Date(),
+    });
 
     // Get remaining queue
-    const { data: remainingQueue, error: queueError } = await supabase
-      .from("tokens")
-      .select("id, token_number, status, created_at")
-      .eq("status", "waiting")
-      .order("created_at", { ascending: true });
-
-    if (queueError) {
-      throw queueError;
-    }
+    const remainingQueue = await mongoDb
+      .collection("tokens")
+      .find({
+        status: "waiting",
+      })
+      .sort({
+        createdAt: 1,
+      })
+      .toArray();
 
     res.json({
       success: true,
-      message: `${nextToken.token_number} is now being served.`,
-      servedToken: nextToken.token_number,
+      message: `${nextToken.tokenNumber} is now being served.`,
+      servedToken: nextToken.tokenNumber,
       remainingQueue: remainingQueue.length,
       queue: remainingQueue,
     });
 
   } catch (error) {
-    console.error("Serve next error:", error);
+    console.error("MongoDB serve next error:", error);
 
     res.status(500).json({
       success: false,
@@ -440,17 +418,12 @@ const { error: updateError } = await supabase
 app.post("/api/queue/complete", async (req, res) => {
   try {
     // Find the currently serving token
-    const { data: servingToken, error: findError } = await supabase
-      .from("tokens")
-      .select("id, token_number")
-      .eq("status", "serving")
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (findError) {
-      throw findError;
-    }
+    const servingToken = await mongoDb
+      .collection("tokens")
+      .findOne(
+        { status: "serving" },
+        { sort: { createdAt: 1 } }
+      );
 
     if (!servingToken) {
       return res.status(400).json({
@@ -460,38 +433,34 @@ app.post("/api/queue/complete", async (req, res) => {
     }
 
     // Mark the token as served
-    const { error: updateError } = await supabase
-      .from("tokens")
-      .update({
-        status: "served",
-        served_at: new Date().toISOString(),
-      })
-      .eq("id", servingToken.id);
-
-    if (updateError) {
-      throw updateError;
-    }
+    await mongoDb
+      .collection("tokens")
+      .updateOne(
+        { _id: servingToken._id },
+        {
+          $set: {
+            status: "served",
+            servedAt: new Date(),
+          },
+        }
+      );
 
     // Record queue event
-    const { error: eventError } = await supabase
-      .from("queue_events")
-      .insert({
-        token_id: servingToken.id,
-        event_type: "served",
-      });
-
-    if (eventError) {
-      throw eventError;
-    }
+    await mongoDb.collection("queue_events").insertOne({
+      tokenId: servingToken._id,
+      tokenNumber: servingToken.tokenNumber,
+      eventType: "served",
+      createdAt: new Date(),
+    });
 
     res.json({
       success: true,
-      message: `${servingToken.token_number} has been completed.`,
-      completedToken: servingToken.token_number,
+      message: `${servingToken.tokenNumber} has been completed.`,
+      completedToken: servingToken.tokenNumber,
     });
 
   } catch (error) {
-    console.error("Complete customer error:", error);
+    console.error("MongoDB complete customer error:", error);
 
     res.status(500).json({
       success: false,
@@ -507,79 +476,89 @@ app.get("/api/predict/:tokenNumber", async (req, res) => {
   try {
     const { tokenNumber } = req.params;
 
-    const { data: token, error: tokenError } = await supabase
-      .from("tokens")
-      .select(`
-        id,
-        token_number,
-        status,
-        created_at,
-        service_id,
-        services (
-          name,
-          average_service_time
-        )
-      `)
-      .eq("token_number", tokenNumber)
-      .single();
+    // Find the requested token
+    const token = await mongoDb
+      .collection("tokens")
+      .findOne({
+        tokenNumber: tokenNumber,
+      });
 
-    if (tokenError) {
+    if (!token) {
       return res.status(404).json({
         success: false,
         message: "Token not found.",
       });
     }
 
+    // If token is no longer waiting
     if (token.status !== "waiting") {
       return res.json({
         success: true,
-        token: token.token_number,
+        token: token.tokenNumber,
         status: token.status,
         predictedWait: 0,
         message: "Customer is not waiting in the queue.",
       });
     }
 
-    const { data: waitingTokens, error: queueError } = await supabase
-      .from("tokens")
-      .select(`
-        id,
-        token_number,
-        created_at,
-        services (
-          average_service_time
-        )
-      `)
-      .eq("status", "waiting")
-      .order("created_at", { ascending: true });
+    // Find the token's service
+    const tokenService = await mongoDb
+      .collection("services")
+      .findOne({
+        id: token.serviceId,
+      });
 
-    if (queueError) {
-      throw queueError;
+    if (!tokenService) {
+      return res.status(404).json({
+        success: false,
+        message: "Service not found.",
+      });
     }
 
-    const position = waitingTokens.findIndex(
-      (item) => item.id === token.id
-    ) + 1;
+    // Get all waiting tokens
+    const waitingTokens = await mongoDb
+      .collection("tokens")
+      .find({
+        status: "waiting",
+      })
+      .sort({
+        createdAt: 1,
+      })
+      .toArray();
+
+    const position =
+      waitingTokens.findIndex(
+        (item) => item.tokenNumber === token.tokenNumber
+      ) + 1;
 
     const peopleAhead = position - 1;
 
-    const baselineWait = waitingTokens
-      .slice(0, peopleAhead)
-      .reduce((total, item) => {
-        return total + item.services.average_service_time;
-      }, 0);
+    // Calculate baseline waiting time
+    let baselineWait = 0;
+
+    for (const item of waitingTokens.slice(0, peopleAhead)) {
+      const service = await mongoDb
+        .collection("services")
+        .findOne({
+          id: item.serviceId,
+        });
+
+      if (service) {
+        baselineWait += service.average_service_time;
+      }
+    }
 
     // Use ML model to predict waiting time
     const predictedWait = await predictWaitTime(
-      token.services.average_service_time,
+      tokenService.average_service_time,
       peopleAhead,
       baselineWait
     );
 
     res.json({
       success: true,
-      token: token.token_number,
-      service: token.services.name,
+      token: token.tokenNumber,
+      service: tokenService.name,
       status: token.status,
       position: position,
       peopleAhead: peopleAhead,
@@ -589,7 +568,7 @@ app.get("/api/predict/:tokenNumber", async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Prediction error:", error);
+    console.error("MongoDB prediction error:", error);
 
     res.status(500).json({
       success: false,
@@ -597,13 +576,28 @@ app.get("/api/predict/:tokenNumber", async (req, res) => {
     });
   }
 });
-
 // -------------------------
 // Start Server
 // -------------------------
 
 const PORT = 5000;
 
-app.listen(PORT, () => {
-  console.log(`QueueMind AI backend running on http://localhost:${PORT}`);
-});
+async function startServer() {
+  try {
+    await mongoClient.connect();
+
+    console.log("✅ MongoDB connected successfully!");
+    console.log("✅ Database selected: queuemind");
+
+    app.listen(PORT, () => {
+      console.log(`QueueMind AI backend running on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error("❌ MongoDB connection failed:");
+    console.error(error.message);
+
+    process.exit(1);
+  }
+}
+
+startServer();

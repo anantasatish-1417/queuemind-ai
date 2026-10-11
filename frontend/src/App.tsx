@@ -4,11 +4,11 @@ import "./App.css";
 function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [token, setToken] = useState<string | null>(null);
-  const [selectedService, setSelectedService] = useState(1);
-  const serviceNames: Record<number, string> = {
-  1: "General Consultation",
-  2: "Billing & Payments",
-  3: "Document Services",
+  const [selectedService, setSelectedService] = useState("general");
+  const serviceNames: Record<string, string> = {
+  general: "General Consultation",
+  billing: "Billing & Payments",
+  documents: "Document Services",
 };
   const [position, setPosition] = useState<number | null>(null);
   const [peopleAhead, setPeopleAhead] = useState<number | null>(null);
@@ -82,7 +82,7 @@ useEffect(() => {
 
     await fetchQueue();
 
-    alert(`${data.servedToken} has been served.`);
+    alert(`${data.servedToken} is now being served.`);
   } catch (error) {
     console.error("Failed to serve next customer:", error);
     alert("Unable to connect to QueueMind AI backend.");
@@ -244,11 +244,10 @@ setPredictedWait(predictionData.predictedWait);
             </p>
             <select
             value={selectedService}
-            onChange={(e) => setSelectedService(Number(e.target.value))}
-          >
-            <option value={1}>🏥 General Consultation</option>
-            <option value={2}>💳 Billing & Payments</option>
-            <option value={3}>📄 Document Services</option>
+            onChange={(e) => setSelectedService(e.target.value)}
+          ><option value="general">🏥 General Consultation</option>
+<option value="billing">💳 Billing & Payments</option>
+<option value="documents">📄 Document Services</option>
             </select>
 
             <button
