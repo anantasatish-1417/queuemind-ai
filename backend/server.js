@@ -5,7 +5,10 @@ const cors = require("cors");
 
 const { MongoClient } = require("mongodb");
 
-const mongoClient = new MongoClient(process.env.MONGODB_URI);
+const mongoClient = new MongoClient(process.env.MONGODB_URI, {
+  tls: true,
+  serverSelectionTimeoutMS: 10000
+});
 const mongoDb = mongoClient.db("queuemind");
 
 const app = express();
