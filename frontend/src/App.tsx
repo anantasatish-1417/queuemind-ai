@@ -27,7 +27,7 @@ function App() {
  const fetchQueue = async () => {
   try {
     const response = await fetch(
-      "http://localhost:5000/api/queue"
+      "https://queuemind-ai-backend.onrender.com/api/queue"
     );
 
     const data = await response.json();
@@ -38,7 +38,7 @@ function App() {
 
     // Fetch AI queue recommendation
     const optimizationResponse = await fetch(
-      "http://localhost:5000/api/queue/optimization"
+      "https://queuemind-ai-backend.onrender.com/api/queue/optimization"
     );
 
     const optimizationData = await optimizationResponse.json();
@@ -49,7 +49,7 @@ function App() {
       );
     }
     const analyticsResponse = await fetch(
-  "http://localhost:5000/api/analytics"
+  "https://queuemind-ai-backend.onrender.com/api/analytics"
 );
 
 const analyticsData = await analyticsResponse.json();
@@ -58,7 +58,7 @@ if (analyticsData.success) {
   setAnalytics(analyticsData);
 }
 const serviceAnalyticsResponse = await fetch(
-  "http://localhost:5000/api/analytics/services"
+  "https://queuemind-ai-backend.onrender.com/api/analytics/services"
 );
 
 const serviceAnalyticsData =
@@ -89,7 +89,7 @@ useEffect(() => {
   const fetchTokenStatus = async () => {
     try {
       const response = await fetch(
-        `http://localhost:5000/api/tokens/${token}`
+        `https://queuemind-ai-backend.onrender.com/api/tokens/${token}`
       );
 
       const data = await response.json();
@@ -123,7 +123,7 @@ useEffect(() => {
   const serveNext = async () => {
   try {
     const response = await fetch(
-      "http://localhost:5000/api/queue/serve-next",
+      "https://queuemind-ai-backend.onrender.com/api/queue/serve-next",
       {
         method: "POST",
       }
@@ -147,7 +147,7 @@ useEffect(() => {
 const completeCurrent = async () => {
   try {
     const response = await fetch(
-      "http://localhost:5000/api/queue/complete",
+      "https://queuemind-ai-backend.onrender.com/api/queue/complete",
       {
         method: "POST",
       }
@@ -174,7 +174,7 @@ const completeCurrent = async () => {
     try {
       setLoading(true);
 
-      const response = await fetch("http://localhost:5000/api/tokens", {
+      const response = await fetch("https://queuemind-ai-backend.onrender.com/api/tokens", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -191,7 +191,7 @@ const completeCurrent = async () => {
       setPeopleAhead(data.peopleAhead);
       setEstimatedWait(data.estimatedWait);
       const predictionResponse = await fetch(
- `http://localhost:5000/api/predict/${data.token}`
+ `https://queuemind-ai-backend.onrender.com/api/predict/${data.token}`
 );
 
 const predictionData = await predictionResponse.json();
