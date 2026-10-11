@@ -911,7 +911,7 @@ app.get("/api/predict/:tokenNumber", async (req, res) => {
 // Start Server
 // -------------------------
 
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 async function startServer() {
   try {
